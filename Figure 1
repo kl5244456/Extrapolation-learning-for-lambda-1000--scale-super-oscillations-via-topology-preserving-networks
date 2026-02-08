@@ -1,0 +1,176 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
+from mpl_toolkits.mplot3d import Axes3D
+from scipy.special import j0
+from torch.utils.data import DataLoader, TensorDataset
+
+# ==========================================
+# 1. Chebyshev zero generation
+# ==========================================
+def generate_cheby_zeros(N_lines, ctrlrgn, peakval):
+    n = int(np.ceil((N_lines - 1) / 2))
+    try:
+        x0 = np.cosh(np.acosh(peakval) / n)
+        alpha = (1 + x0) / (1 - np.cos(ctrlrgn))
+        beta = x0 - alpha
+        v_z = np.cos(np.pi * (2 * np.arange(1, n + 1) - 1) / (2 * n))
+        zu = (v_z - beta) / alpha
+        zn = []
+        for val in zu:
+            if abs(val) <= 1:
+                zn.append(val + 1j * np.sqrt(1 - val**2))
+                zn.append(val - 1j * np.sqrt(1 - val**2))
+        return np.array(zn)
+    except: return np.array([])
+
+def create_dataset(num_samples=5000):
+    lam, NA = 632.8e-9, 1.0
+    k_max = (2 * np.pi / lam) * NA
+    N_lines = 33
+    delk = 2 * k_max / N_lines
+    all_inputs, all_targets = [], []
+    print("Generating dataset...")
+    while len(all_inputs) < num_samples:
+        W = np.random.uniform(1.2, 3.0)
+        pv = np.random.uniform(2.5, 15.0)
+        zn = generate_cheby_zeros(N_lines, delk * W * lam, pv)
+        if len(zn) == 0: continue
+        angles = np.angle(zn)
+        pos_angles = angles[angles > 0]
+        if len(pos_angles) == 0: continue
+        actual_res = np.min(pos_angles) / delk / lam
+        all_inputs.append([W, actual_res, pv])
+        all_targets.append(np.concatenate([zn.real, zn.imag]))
+    return np.array(all_inputs), np.array(all_targets)
+
+# ==========================================
+# 2. MLP
+# ==========================================
+class SuperResNet(nn.Module):
+    def __init__(self):
+        super(SuperResNet, self).__init__()
+        self.net = nn.Sequential(
+            nn.Linear(2, 256), nn.ReLU(),
+            nn.Linear(256, 512), nn.ReLU(),
+            nn.Linear(512, 1024), nn.ReLU(),
+            nn.Linear(1024, 64)
+        )
+    def forward(self, x): return self.net(x)
+
+# ==========================================
+# 3. train
+# ==========================================
+X_raw, Y_raw = create_dataset(5000)
+min_res_train = np.min(X_raw[:, 1])
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = SuperResNet().to(device)
+optimizer = optim.Adam(model.parameters(), lr=0.0005)
+criterion = nn.MSELoss()
+loader = DataLoader(TensorDataset(torch.FloatTensor(X_raw[:, :2]), torch.FloatTensor(Y_raw)), batch_size=64, shuffle=True)
+
+loss_history = []
+print("Starting training...")
+for epoch in range(151):
+    epoch_loss = 0
+    for bx, by in loader:
+        bx, by = bx.to(device), by.to(device)
+        optimizer.zero_grad(); out = model(bx); loss = criterion(out, by)
+        loss.backward(); optimizer.step(); epoch_loss += loss.item()
+    loss_history.append(epoch_loss/len(loader))
+    if epoch % 50 == 0: print(f"Epoch {epoch:03d} | Loss: {loss_history[-1]:.6f}")
+
+# ==========================================
+# 4. plot
+# ==========================================
+def plot_advanced_manuscript_figure(model, X_raw, Y_raw, loss_hist):
+    plt.rcParams.update({'font.family': 'sans-serif', 'font.size': 10, 'axes.linewidth': 1.2})
+    fig = plt.figure(figsize=(18, 12), dpi=200)
+    gs = gridspec.GridSpec(2, 3, figure=fig, hspace=0.35, wspace=0.35)
+
+    lam, NA = 632.8e-9, 1.0
+    k_max = (2 * np.pi / lam) * NA
+    delk = 2 * k_max / 33
+    x_range = np.linspace(-2.5*lam, 2.5*lam, 5000)
+
+    # (A) 
+    ax_a = fig.add_subplot(gs[0, 0])
+    sc = ax_a.scatter(X_raw[:, 0], X_raw[:, 1], c=X_raw[:, 1], cmap='viridis', s=3, alpha=0.4)
+    ax_a.set_title("A. Dataset Distribution ($W$ vs $Res$)", fontweight='bold')
+    ax_a.set_xlabel("ROI Width ($W/\lambda$)"); ax_a.set_ylabel("Resolution ($Res/\lambda$)")
+    plt.colorbar(sc, ax=ax_a, shrink=0.7)
+
+    # (B) 
+    ax_b = fig.add_subplot(gs[0, 1], projection='3d')
+    res_axis = X_raw[:, 1]
+    for i in [0, 8, 16, 24]: 
+        ax_b.scatter(Y_raw[:, i], Y_raw[:, i+32], res_axis, c=res_axis, cmap='viridis', s=1, alpha=0.05)
+    ax_b.set_title("B. 3D Training Zero Manifold", fontweight='bold')
+    ax_b.set_xlabel("Re(z)"); ax_b.set_ylabel("Im(z)"); ax_b.set_zlabel("Res ($\lambda$)", labelpad=10)
+    ax_b.view_init(elev=20, azim=45)
+
+    # (C) 
+    ax_c = fig.add_subplot(gs[0, 2])
+    ax_c.plot(loss_hist, color='black', lw=1.5); ax_c.set_yscale('log')
+    ax_c.set_title("C. Training Convergence", fontweight='bold')
+    ax_c.set_xlabel("Epochs"); ax_c.set_ylabel("MSE Loss")
+    ax_c.text(0.5, 0.5, "MLP Architecture:\n[2]-[256]-[512]-[1024]-[64]", transform=ax_c.transAxes,
+              ha='center', va='center', bbox=dict(boxstyle="round", fc="white", ec="gray", alpha=0.8))
+
+    # (D) 
+    ax_d = fig.add_subplot(gs[1, 0:2])
+    targets = [min_res_train * 1.5, min_res_train * 0.8, min_res_train * 0.25]
+    colors = ['#2E7D32', '#F57C00', '#D32F2F']
+    labels = ['In-distribution', 'Mild Extrap (0.8x)', 'Deep Extrap (0.25x)']
+
+    pred_data_for_3d = []
+    ax_d.plot(x_range/lam, (np.abs(j0(k_max * x_range)))**2, 'k--', alpha=0.3, label='Diffraction Limit ($J_0^2$)')
+
+    model.eval()
+    for i, t_res in enumerate(targets):
+        with torch.no_grad():
+            t_in = torch.FloatTensor([[1.8, t_res]]).to(device)
+            pred = model(t_in).cpu().numpy()[0]
+
+        zn = pred[:32] + 1j * pred[32:]
+        pred_data_for_3d.append((zn, t_res))
+
+        z_arr = np.exp(1j * delk * x_range)
+        SF = np.power(z_arr, -16) * np.prod(z_arr[:, np.newaxis] - zn, axis=1)
+        Int_SO = (np.abs(SF) / np.abs(SF[np.argmin(np.abs(x_range))]))**2
+
+        # 
+        x_z = np.angle(zn) / delk
+        m_res = (np.abs(np.min(x_z[x_z > 0])) + np.abs(np.max(x_z[x_z < 0]))) / 2 / lam
+        ax_d.plot(x_range/lam, Int_SO, color=colors[i], lw=2, label=f"{labels[i]}: Target={t_res:.3f}λ, Actual={m_res:.3f}λ")
+
+    ax_d.set_yscale('log'); ax_d.set_ylim([1e-6, 1e4]); ax_d.set_xlim([-2, 2])
+    ax_d.set_title("D. Physical Performance across Extrapolation Regimes", fontweight='bold')
+    ax_d.set_xlabel("Position ($x/\lambda$)"); ax_d.set_ylabel("Intensity (Log)")
+    ax_d.legend(fontsize=8, ncol=2)
+    ax_d.axvspan(-min_res_train, min_res_train, color='gray', alpha=0.05)
+
+    # (F) 
+    ax_f = fig.add_subplot(gs[1, 2], projection='3d')
+    
+    theta = np.linspace(0, 2*np.pi, 100)
+    for r_plane in np.linspace(min_res_train*0.2, min_res_train*1.6, 6):
+        ax_f.plot(np.cos(theta), np.sin(theta), r_plane, color='gray', alpha=0.1, lw=0.5)
+
+    for i, (zn, t_res) in enumerate(pred_data_for_3d):
+        ax_f.scatter(zn.real, zn.imag, t_res, color=colors[i], s=40, edgecolor='k', label=labels[i])
+        ax_f.plot(zn.real, zn.imag, t_res, color=colors[i], alpha=0.4, lw=0.8)
+
+    ax_f.set_title("F. 3D Prediction Manifold", fontweight='bold')
+    ax_f.set_xlabel("Re(z)"); ax_f.set_ylabel("Im(z)"); ax_f.set_zlabel("Res ($\lambda$)")
+    ax_f.view_init(elev=15, azim=35)
+
+    plt.suptitle("Deep Physical Extrapolation of Super-oscillatory Design Manifold", fontsize=18, fontweight='bold', y=0.98)
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    plt.show()
+
+plot_advanced_manuscript_figure(model, X_raw, Y_raw, loss_history)
