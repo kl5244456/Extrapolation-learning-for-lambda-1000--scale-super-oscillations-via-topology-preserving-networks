@@ -137,22 +137,3 @@ plt.legend(fontsize=12)
 plt.grid(axis='y', alpha=0.2)
 
 plt.show()
-
-from google.colab import files
-import scipy.io as sio
-
-# all_zeros_vault
-data_to_save = {
-    'all_zeros': all_zeros_vault,
-    'target_points': target_points,
-    'measured_df': df.to_dict('list'),
-    'training_limit': train_limit
-}
-
-# 1. 保存到 Colab 磁盘
-file_name = 'Fig3a_Batch_Data_50Runs.mat'
-sio.savemat(file_name, data_to_save)
-
-# 2. 触发浏览器自动下载到本地
-print(f"正在准备下载 {file_name}...")
-files.download(file_name)
