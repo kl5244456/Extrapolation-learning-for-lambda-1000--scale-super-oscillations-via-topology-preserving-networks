@@ -4,14 +4,14 @@ from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import matplotlib.colors as mcolors
-from mpl_toolkits.mplot3d import Axes3D # 导入 3D 绘图工具
+from mpl_toolkits.mplot3d import Axes3D
 import numpy as np
 import scipy.io as sio
 import os
 from google.colab import drive
 
 # ==========================================
-# 1. 环境准备与数据加载
+# 1. 
 # ==========================================
 drive.mount('/content/drive')
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -32,7 +32,7 @@ class SuperResNet(nn.Module):
     def forward(self, x): return self.net(x)
 
 # ==========================================
-# 2. 核心绘图函数
+# 2. 
 # ==========================================
 def plot_figure_2_3D_v3(model, X_raw, device, min_res_train):
     plt.rcParams.update({
@@ -42,12 +42,11 @@ def plot_figure_2_3D_v3(model, X_raw, device, min_res_train):
         'mathtext.fontset': 'stix'
     })
 
-    # 采用 2x2 布局，Panel B 占据右上位置
     fig = plt.figure(figsize=(18, 12), dpi=150, constrained_layout=True)
     gs = gridspec.GridSpec(2, 2, figure=fig, width_ratios=[1, 1.2])
     model.eval()
 
-    # --- (A) Latent Space PCA (潜空间投影) ---
+    # --- (A) Latent Space PCA---
     ax_a = fig.add_subplot(gs[0, 0])
     with torch.no_grad():
         subset_idx = np.random.choice(len(X_raw), 2000, replace=False)
@@ -60,8 +59,7 @@ def plot_figure_2_3D_v3(model, X_raw, device, min_res_train):
     ax_a.set_xlabel("Latent PC 1"); ax_a.set_ylabel("Latent PC 2")
     plt.colorbar(sc, ax=ax_a, label=r"Resolution ($\sigma/\lambda$)")
 
-    # --- (B) 3D Analytic Trajectories (3D 解析演化流形) ---
-    # 修改：将分辨率作为 Z 轴，展示 32 条零点随分辨率压缩的轨迹
+    # --- (B) 3D Analytic Trajectories ---
     ax_b = fig.add_subplot(gs[0, 1], projection='3d')
     res_sweep = np.linspace(0.4, min_res_train * 0.1, 200)
     w_fixed = 1.8
@@ -73,7 +71,6 @@ def plot_figure_2_3D_v3(model, X_raw, device, min_res_train):
             trajectories.append(pred[:32] + 1j * pred[32:])
     trajectories = np.array(trajectories) # [200, 32]
 
-    # 绘制参考单位圆柱
     u = np.linspace(0, 2 * np.pi, 100)
     z_cyl = np.linspace(res_sweep.min(), res_sweep.max(), 10)
     U, Z = np.meshgrid(u, z_cyl)
@@ -81,19 +78,16 @@ def plot_figure_2_3D_v3(model, X_raw, device, min_res_train):
     ax_b.plot_surface(X_cyl, Y_cyl, Z, color='gray', alpha=0.05, zorder=0)
 
     for z_idx in range(32):
-        # 提取第 z_idx 个零点的运动轨迹
         x_traj = trajectories[:, z_idx].real
         y_traj = trajectories[:, z_idx].imag
-        # 使用颜色渐变展示解析演化
         ax_b.plot(x_traj, y_traj, res_sweep, color=plt.cm.viridis(z_idx/32), lw=2, alpha=0.8)
-        # 标记终点 (0.1x 极端外延区)
         ax_b.scatter(x_traj[-1], y_traj[-1], res_sweep[-1], color='red', s=10)
 
     ax_b.set_title(r"B. 3D Zero Evolution Manifold ($z$ vs $\sigma$)", fontweight='bold', pad=20)
     ax_b.set_xlabel("Re(z)"); ax_b.set_ylabel("Im(z)"); ax_b.set_zlabel(r"Resolution ($\sigma/\lambda$)")
-    ax_b.view_init(elev=20, azim=45) # 调整视角以获得最佳流形观察效果
+    ax_b.view_init(elev=20, azim=45) 
 
-    # --- (D) Constraint Fidelity (径向偏差柱状图) ---
+    # --- (D) Constraint Fidelity ---
     ax_d = fig.add_subplot(gs[1, 0])
     depths = [1.5, 1.0, 0.5, 0.25, 0.1]
     devs = []
@@ -108,7 +102,7 @@ def plot_figure_2_3D_v3(model, X_raw, device, min_res_train):
     ax_d.set_title(r"D. Radial Drift from Unit Circle ($|z|-1$)", fontweight='bold', pad=15)
     ax_d.set_xlabel("Extrapolation Depth"); ax_d.set_ylabel("Mean Absolute Deviation")
 
-    # --- (E) Global Analyticity Residual Map (解析残差地形图) ---
+    # --- (E) Global Analyticity Residual Map ---
     ax_e = fig.add_subplot(gs[1, 1])
     W_m, R_m = np.meshgrid(np.linspace(1.2, 3.0, 80), np.linspace(min_res_train*0.1, 2.5, 80))
     m_in = torch.FloatTensor(np.stack([W_m.ravel(), R_m.ravel()], axis=1)).to(device)
@@ -127,7 +121,7 @@ def plot_figure_2_3D_v3(model, X_raw, device, min_res_train):
     plt.show()
 
 # ==========================================
-# 3. 执行加载与绘图
+# 3.
 # ==========================================
 if os.path.exists(model_path):
     ckpt = torch.load(model_path, map_location=device, weights_only=False)
