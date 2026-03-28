@@ -1,0 +1,143 @@
+import torch
+import torch.nn as nn
+from sklearn.decomposition import PCA
+import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
+import matplotlib.colors as mcolors
+from mpl_toolkits.mplot3d import Axes3D # 导入 3D 绘图工具
+import numpy as np
+import scipy.io as sio
+import os
+from google.colab import drive
+
+# ==========================================
+# 1. 环境准备与数据加载
+# ==========================================
+drive.mount('/content/drive')
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+folder_path = "/content/drive/MyDrive/SuperRes_Project/"
+model_path = os.path.join(folder_path, "super_res_extrap_v1.pth")
+data_path = os.path.join(folder_path, "SO_DeepLearning_Final_3D.mat")
+
+class SuperResNet(nn.Module):
+    def __init__(self):
+        super(SuperResNet, self).__init__()
+        self.net = nn.Sequential(
+            nn.Linear(2, 256), nn.ReLU(),
+            nn.Linear(256, 512), nn.ReLU(),
+            nn.Linear(512, 1024), nn.ReLU(),
+            nn.Linear(1024, 64)
+        )
+    def forward(self, x): return self.net(x)
+
+# ==========================================
+# 2. 核心绘图函数
+# ==========================================
+def plot_figure_2_3D_v3(model, X_raw, device, min_res_train):
+    plt.rcParams.update({
+        'font.family': 'sans-serif',
+        'font.size': 11,
+        'axes.linewidth': 1.5,
+        'mathtext.fontset': 'stix'
+    })
+
+    # 采用 2x2 布局，Panel B 占据右上位置
+    fig = plt.figure(figsize=(18, 12), dpi=150, constrained_layout=True)
+    gs = gridspec.GridSpec(2, 2, figure=fig, width_ratios=[1, 1.2])
+    model.eval()
+
+    # --- (A) Latent Space PCA (潜空间投影) ---
+    ax_a = fig.add_subplot(gs[0, 0])
+    with torch.no_grad():
+        subset_idx = np.random.choice(len(X_raw), 2000, replace=False)
+        x_sub = torch.FloatTensor(X_raw[subset_idx, :2]).to(device)
+        latent_features = model.net[:7](x_sub).cpu().numpy()
+    pca = PCA(n_components=2)
+    latent_2d = pca.fit_transform(latent_features)
+    sc = ax_a.scatter(latent_2d[:, 0], latent_2d[:, 1], c=X_raw[subset_idx, 1], cmap='plasma', s=15, alpha=0.6)
+    ax_a.set_title("A. Latent Manifold Projection", fontweight='bold', pad=15)
+    ax_a.set_xlabel("Latent PC 1"); ax_a.set_ylabel("Latent PC 2")
+    plt.colorbar(sc, ax=ax_a, label=r"Resolution ($\sigma/\lambda$)")
+
+    # --- (B) 3D Analytic Trajectories (3D 解析演化流形) ---
+    # 修改：将分辨率作为 Z 轴，展示 32 条零点随分辨率压缩的轨迹
+    ax_b = fig.add_subplot(gs[0, 1], projection='3d')
+    res_sweep = np.linspace(0.4, min_res_train * 0.1, 200)
+    w_fixed = 1.8
+    trajectories = []
+    for r in res_sweep:
+        with torch.no_grad():
+            t_in = torch.FloatTensor([[w_fixed, r]]).to(device)
+            pred = model(t_in).cpu().numpy()[0]
+            trajectories.append(pred[:32] + 1j * pred[32:])
+    trajectories = np.array(trajectories) # [200, 32]
+
+    # 绘制参考单位圆柱
+    u = np.linspace(0, 2 * np.pi, 100)
+    z_cyl = np.linspace(res_sweep.min(), res_sweep.max(), 10)
+    U, Z = np.meshgrid(u, z_cyl)
+    X_cyl, Y_cyl = np.cos(U), np.sin(U)
+    ax_b.plot_surface(X_cyl, Y_cyl, Z, color='gray', alpha=0.05, zorder=0)
+
+    for z_idx in range(32):
+        # 提取第 z_idx 个零点的运动轨迹
+        x_traj = trajectories[:, z_idx].real
+        y_traj = trajectories[:, z_idx].imag
+        # 使用颜色渐变展示解析演化
+        ax_b.plot(x_traj, y_traj, res_sweep, color=plt.cm.viridis(z_idx/32), lw=2, alpha=0.8)
+        # 标记终点 (0.1x 极端外延区)
+        ax_b.scatter(x_traj[-1], y_traj[-1], res_sweep[-1], color='red', s=10)
+
+    ax_b.set_title(r"B. 3D Zero Evolution Manifold ($z$ vs $\sigma$)", fontweight='bold', pad=20)
+    ax_b.set_xlabel("Re(z)"); ax_b.set_ylabel("Im(z)"); ax_b.set_zlabel(r"Resolution ($\sigma/\lambda$)")
+    ax_b.view_init(elev=20, azim=45) # 调整视角以获得最佳流形观察效果
+
+    # --- (D) Constraint Fidelity (径向偏差柱状图) ---
+    ax_d = fig.add_subplot(gs[1, 0])
+    depths = [1.5, 1.0, 0.5, 0.25, 0.1]
+    devs = []
+    for d in depths:
+        with torch.no_grad():
+            t_in = torch.FloatTensor([[1.8, min_res_train*d]]).to(device)
+            p = model(t_in).cpu().numpy()[0]
+            zn = p[:32] + 1j * p[32:]
+            devs.append(np.mean(np.abs(np.abs(zn) - 1.0)))
+    ax_d.bar([f"{d}x" for d in depths], devs, color='navy', alpha=0.7, edgecolor='black')
+    ax_d.set_yscale('log')
+    ax_d.set_title(r"D. Radial Drift from Unit Circle ($|z|-1$)", fontweight='bold', pad=15)
+    ax_d.set_xlabel("Extrapolation Depth"); ax_d.set_ylabel("Mean Absolute Deviation")
+
+    # --- (E) Global Analyticity Residual Map (解析残差地形图) ---
+    ax_e = fig.add_subplot(gs[1, 1])
+    W_m, R_m = np.meshgrid(np.linspace(1.2, 3.0, 80), np.linspace(min_res_train*0.1, 2.5, 80))
+    m_in = torch.FloatTensor(np.stack([W_m.ravel(), R_m.ravel()], axis=1)).to(device)
+    with torch.no_grad():
+        preds = model(m_in).cpu().numpy()
+        resid = np.mean(np.abs(np.sqrt(preds[:, :32]**2 + preds[:, 32:]**2) - 1.0), axis=1).reshape(W_m.shape)
+
+    im = ax_e.pcolormesh(W_m, R_m, resid, cmap='magma', shading='auto', norm=mcolors.LogNorm(vmin=1e-4, vmax=1e-1))
+    ax_e.axhline(min_res_train, color='white', linestyle='--', lw=2, label='Training Boundary')
+    ax_e.set_title("E. Global Analyticity Residual Map", fontweight='bold', pad=15)
+    ax_e.set_xlabel(r"ROI Width ($W/\lambda$)"); ax_e.set_ylabel(r"Resolution ($\sigma/\lambda$)")
+    plt.colorbar(im, ax=ax_e, label='Mean Unit-Circle Violation')
+    ax_e.legend(loc='upper right')
+
+    plt.suptitle("Figure 2: Neural Interpretation of Super-oscillatory Analytic Manifold", fontsize=22, fontweight='bold')
+    plt.show()
+
+# ==========================================
+# 3. 执行加载与绘图
+# ==========================================
+if os.path.exists(model_path):
+    ckpt = torch.load(model_path, map_location=device, weights_only=False)
+    model = SuperResNet().to(device)
+    model.load_state_dict(ckpt['model_state_dict'])
+    m_res_train = ckpt['min_res_train'] # 约为 0.0844
+
+    if os.path.exists(data_path):
+        X_raw = sio.loadmat(data_path)['X_raw']
+    else:
+        X_raw, _ = create_dataset(num_samples=2000)
+
+    plot_figure_2_3D_v3(model, X_raw, device, m_res_train)
