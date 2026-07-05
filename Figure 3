@@ -27,7 +27,7 @@ def generate_cheby_zeros(N_lines, ctrlrgn, peakval):
         return np.array(zn)
     except: return np.array([])
 
-def create_dataset(num_samples=3000):
+def create_dataset(num_samples=5000):
     lam, NA = 632.8e-9, 1.0
     k_max = (2 * np.pi / lam) * NA
     N_lines = 33
