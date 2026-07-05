@@ -65,7 +65,7 @@ class SuperResNet(nn.Module):
         out = self.net(x)
         if self.mode == 'Hard':
             real = out[:, :32]; imag = out[:, 32:]
-            norm = torch.sqrt(real**2 + imag**2 + 1e-8)
+            norm = torch.sqrt(real**2 + imag**2)
             out = torch.cat([real/norm, imag/norm], dim=1)
         return out
 
