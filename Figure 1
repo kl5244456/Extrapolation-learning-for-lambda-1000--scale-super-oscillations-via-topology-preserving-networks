@@ -4,9 +4,11 @@ import torch.optim as optim
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
+import copy
 from mpl_toolkits.mplot3d import Axes3D
 from scipy.special import j0
 from torch.utils.data import DataLoader, TensorDataset
+from sklearn.model_selection import train_test_split
 
 # ==========================================
 # 1. Chebyshev zero generation
@@ -60,34 +62,177 @@ class SuperResNet(nn.Module):
             nn.Linear(1024, 64)
         )
     def forward(self, x): return self.net(x)
-
 # ==========================================
-# 3. train
+# 3. Train
 # ==========================================
 X_raw, Y_raw = create_dataset(5000)
 min_res_train = np.min(X_raw[:, 1])
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model = SuperResNet().to(device)
-optimizer = optim.Adam(model.parameters(), lr=0.0005)
-criterion = nn.MSELoss()
-loader = DataLoader(TensorDataset(torch.FloatTensor(X_raw[:, :2]), torch.FloatTensor(Y_raw)), batch_size=64, shuffle=True)
+# -------------------------------------------------
+# Train / Validation split
+# -------------------------------------------------
+X_train, X_val, Y_train, Y_val = train_test_split(
+    X_raw[:, :2],
+    Y_raw,
+    test_size=0.20,
+    random_state=42,
+    shuffle=True
+)
 
-loss_history = []
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+model = SuperResNet().to(device)
+
+optimizer = optim.Adam(
+    model.parameters(),
+    lr=5e-4
+)
+
+scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+    optimizer,
+    mode='min',
+    factor=0.5,
+    patience=10,
+    min_lr=1e-6
+)
+
+criterion = nn.MSELoss()
+
+train_loader = DataLoader(
+    TensorDataset(
+        torch.FloatTensor(X_train),
+        torch.FloatTensor(Y_train)
+    ),
+    batch_size=64,
+    shuffle=True
+)
+
+val_x = torch.FloatTensor(X_val).to(device)
+val_y = torch.FloatTensor(Y_val).to(device)
+
+train_loss_history = []
+val_loss_history = []
+
+best_val_loss = np.inf
+best_model_state = None
+
+max_epochs = 1000
+patience = 50
+patience_counter = 0
+min_delta = 1e-8
+
 print("Starting training...")
-for epoch in range(151):
-    epoch_loss = 0
-    for bx, by in loader:
-        bx, by = bx.to(device), by.to(device)
-        optimizer.zero_grad(); out = model(bx); loss = criterion(out, by)
-        loss.backward(); optimizer.step(); epoch_loss += loss.item()
-    loss_history.append(epoch_loss/len(loader))
-    if epoch % 50 == 0: print(f"Epoch {epoch:03d} | Loss: {loss_history[-1]:.6f}")
+
+for epoch in range(max_epochs):
+
+    # -------------------------------------------------
+    # Train
+    # -------------------------------------------------
+    model.train()
+
+    epoch_loss = 0.0
+
+    for bx, by in train_loader:
+
+        bx = bx.to(device)
+        by = by.to(device)
+
+        optimizer.zero_grad()
+
+        pred = model(bx)
+
+        loss = criterion(pred, by)
+
+        loss.backward()
+
+        optimizer.step()
+
+        epoch_loss += loss.item()
+
+    avg_train_loss = epoch_loss / len(train_loader)
+
+    train_loss_history.append(avg_train_loss)
+
+    # -------------------------------------------------
+    # Validation
+    # -------------------------------------------------
+    model.eval()
+
+    with torch.no_grad():
+
+        pred_val = model(val_x)
+
+        avg_val_loss = criterion(pred_val, val_y).item()
+
+    val_loss_history.append(avg_val_loss)
+
+    # -------------------------------------------------
+    # Learning-rate scheduler
+    # -------------------------------------------------
+    scheduler.step(avg_val_loss)
+
+    # -------------------------------------------------
+    # Save best model
+    # -------------------------------------------------
+    if avg_val_loss < best_val_loss - min_delta:
+
+        best_val_loss = avg_val_loss
+
+        best_model_state = copy.deepcopy(model.state_dict())
+
+        patience_counter = 0
+
+    else:
+
+        patience_counter += 1
+
+    # -------------------------------------------------
+    # Print
+    # -------------------------------------------------
+    if epoch % 50 == 0:
+
+        current_lr = optimizer.param_groups[0]['lr']
+
+        print(
+            f"Epoch {epoch:04d} | "
+            f"Train={avg_train_loss:.6e} | "
+            f"Val={avg_val_loss:.6e} | "
+            f"LR={current_lr:.2e} | "
+            f"Patience={patience_counter}/{patience}"
+        )
+
+    # -------------------------------------------------
+    # Early stopping
+    # -------------------------------------------------
+    if patience_counter >= patience:
+
+        print(
+            f"\nEarly stopping triggered at epoch {epoch}."
+        )
+
+        break
+
+# -------------------------------------------------
+# Restore best model
+# -------------------------------------------------
+model.load_state_dict(best_model_state)
+
+print(
+    f"\nTraining completed."
+)
+
+print(
+    f"Best validation MSE = {best_val_loss:.6e}"
+)
+
+print(
+    f"Training stopped at epoch {epoch}."
+)
 
 # ==========================================
 # 4. plot
 # ==========================================
-def plot_advanced_manuscript_figure(model, X_raw, Y_raw, loss_hist):
+def plot_advanced_manuscript_figure(model, X_raw, Y_raw, train_loss_hist, val_loss_hist):
     plt.rcParams.update({'font.family': 'sans-serif', 'font.size': 10, 'axes.linewidth': 1.2})
     fig = plt.figure(figsize=(18, 12), dpi=200)
     gs = gridspec.GridSpec(2, 3, figure=fig, hspace=0.35, wspace=0.35)
@@ -97,17 +242,17 @@ def plot_advanced_manuscript_figure(model, X_raw, Y_raw, loss_hist):
     delk = 2 * k_max / 33
     x_range = np.linspace(-2.5*lam, 2.5*lam, 5000)
 
-    # (A) 
+    # (A)
     ax_a = fig.add_subplot(gs[0, 0])
     sc = ax_a.scatter(X_raw[:, 0], X_raw[:, 1], c=X_raw[:, 1], cmap='viridis', s=3, alpha=0.4)
     ax_a.set_title("A. Dataset Distribution ($W$ vs $Res$)", fontweight='bold')
     ax_a.set_xlabel("ROI Width ($W/\lambda$)"); ax_a.set_ylabel("Resolution ($Res/\lambda$)")
     plt.colorbar(sc, ax=ax_a, shrink=0.7)
 
-    # (B) 
+    # (B)
     ax_b = fig.add_subplot(gs[0, 1], projection='3d')
     res_axis = X_raw[:, 1]
-    for i in [0, 8, 16, 24]: 
+    for i in [0, 8, 16, 24]:
         ax_b.scatter(Y_raw[:, i], Y_raw[:, i+32], res_axis, c=res_axis, cmap='viridis', s=1, alpha=0.05)
     ax_b.set_title("B. 3D Training Zero Manifold", fontweight='bold')
     ax_b.set_xlabel("Re(z)"); ax_b.set_ylabel("Im(z)"); ax_b.set_zlabel("Res ($\lambda$)", labelpad=10)
@@ -115,13 +260,16 @@ def plot_advanced_manuscript_figure(model, X_raw, Y_raw, loss_hist):
 
     # (C) 
     ax_c = fig.add_subplot(gs[0, 2])
-    ax_c.plot(loss_hist, color='black', lw=1.5); ax_c.set_yscale('log')
-    ax_c.set_title("C. Training Convergence", fontweight='bold')
+    ax_c.plot(train_loss_hist, color='black', lw=1.5, label='Train Loss')
+    ax_c.plot(val_loss_hist, color='#D32F2F', lw=1.2, ls='--', label='Val Loss')
+    ax_c.set_yscale('log')
+    ax_c.set_title("C. Training & Validation Convergence", fontweight='bold')
     ax_c.set_xlabel("Epochs"); ax_c.set_ylabel("MSE Loss")
-    ax_c.text(0.5, 0.5, "MLP Architecture:\n[2]-[256]-[512]-[1024]-[64]", transform=ax_c.transAxes,
+    ax_c.legend(fontsize=8, loc='upper right')
+    ax_c.text(0.5, 0.3, "MLP Architecture:\n[2]-[256]-[512]-[1024]-[64]", transform=ax_c.transAxes,
               ha='center', va='center', bbox=dict(boxstyle="round", fc="white", ec="gray", alpha=0.8))
 
-    # (D) 
+    # (D)
     ax_d = fig.add_subplot(gs[1, 0:2])
     targets = [min_res_train * 1.5, min_res_train * 0.8, min_res_train * 0.25]
     colors = ['#2E7D32', '#F57C00', '#D32F2F']
@@ -143,7 +291,6 @@ def plot_advanced_manuscript_figure(model, X_raw, Y_raw, loss_hist):
         SF = np.power(z_arr, -16) * np.prod(z_arr[:, np.newaxis] - zn, axis=1)
         Int_SO = (np.abs(SF) / np.abs(SF[np.argmin(np.abs(x_range))]))**2
 
-        # 
         x_z = np.angle(zn) / delk
         m_res = (np.abs(np.min(x_z[x_z > 0])) + np.abs(np.max(x_z[x_z < 0]))) / 2 / lam
         ax_d.plot(x_range/lam, Int_SO, color=colors[i], lw=2, label=f"{labels[i]}: Target={t_res:.3f}λ, Actual={m_res:.3f}λ")
@@ -154,9 +301,8 @@ def plot_advanced_manuscript_figure(model, X_raw, Y_raw, loss_hist):
     ax_d.legend(fontsize=8, ncol=2)
     ax_d.axvspan(-min_res_train, min_res_train, color='gray', alpha=0.05)
 
-    # (F) 
+    # (F) 3D 预测流形验证
     ax_f = fig.add_subplot(gs[1, 2], projection='3d')
-    
     theta = np.linspace(0, 2*np.pi, 100)
     for r_plane in np.linspace(min_res_train*0.2, min_res_train*1.6, 6):
         ax_f.plot(np.cos(theta), np.sin(theta), r_plane, color='gray', alpha=0.1, lw=0.5)
@@ -173,4 +319,4 @@ def plot_advanced_manuscript_figure(model, X_raw, Y_raw, loss_hist):
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     plt.show()
 
-plot_advanced_manuscript_figure(model, X_raw, Y_raw, loss_history)
+plot_advanced_manuscript_figure(model, X_raw, Y_raw, train_loss_history, val_loss_history)
