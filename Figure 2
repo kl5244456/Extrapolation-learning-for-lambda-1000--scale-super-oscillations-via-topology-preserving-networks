@@ -6,33 +6,14 @@ import matplotlib.gridspec as gridspec
 import matplotlib.colors as mcolors
 from mpl_toolkits.mplot3d import Axes3D
 import numpy as np
-import scipy.io as sio
-import os
-from google.colab import drive
 
 # ==========================================
-# 1. 
+# 1. 检测设备
 # ==========================================
-drive.mount('/content/drive')
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-folder_path = "/content/drive/MyDrive/SuperRes_Project/"
-model_path = os.path.join(folder_path, "super_res_extrap_v1.pth")
-data_path = os.path.join(folder_path, "SO_DeepLearning_Final_3D.mat")
-
-class SuperResNet(nn.Module):
-    def __init__(self):
-        super(SuperResNet, self).__init__()
-        self.net = nn.Sequential(
-            nn.Linear(2, 256), nn.ReLU(),
-            nn.Linear(256, 512), nn.ReLU(),
-            nn.Linear(512, 1024), nn.ReLU(),
-            nn.Linear(1024, 64)
-        )
-    def forward(self, x): return self.net(x)
-
 # ==========================================
-# 2. 
+# 2. 核心绘图函数 (保持你的精美学术级排版不变)
 # ==========================================
 def plot_figure_2_3D_v3(model, X_raw, device, min_res_train):
     plt.rcParams.update({
@@ -46,10 +27,12 @@ def plot_figure_2_3D_v3(model, X_raw, device, min_res_train):
     gs = gridspec.GridSpec(2, 2, figure=fig, width_ratios=[1, 1.2])
     model.eval()
 
-    # --- (A) Latent Space PCA---
+    # --- (A) Latent Space PCA ---
     ax_a = fig.add_subplot(gs[0, 0])
     with torch.no_grad():
-        subset_idx = np.random.choice(len(X_raw), 2000, replace=False)
+        # 增加安全防御：防止 X_raw 样本数不足 2000 导致报错
+        n_samples = min(len(X_raw), 2000)
+        subset_idx = np.random.choice(len(X_raw), n_samples, replace=False)
         x_sub = torch.FloatTensor(X_raw[subset_idx, :2]).to(device)
         latent_features = model.net[:7](x_sub).cpu().numpy()
     pca = PCA(n_components=2)
@@ -123,15 +106,17 @@ def plot_figure_2_3D_v3(model, X_raw, device, min_res_train):
 # ==========================================
 # 3.
 # ==========================================
-if os.path.exists(model_path):
-    ckpt = torch.load(model_path, map_location=device, weights_only=False)
-    model = SuperResNet().to(device)
-    model.load_state_dict(ckpt['model_state_dict'])
-    m_res_train = ckpt['min_res_train'] # 约为 0.0844
-
-    if os.path.exists(data_path):
-        X_raw = sio.loadmat(data_path)['X_raw']
+try:
+    # 确保模型已经切换到正确的设备
+    model.to(device)
+    
+    # 动态检查所需变量是否存在于当前环境的内存中
+    if 'X_raw' in locals() and 'min_res_train' in locals():
+        print(">>> 检测到内存中的原始数据集和边界，正在直接渲染图表...")
+        plot_figure_2_3D_v3(model, X_raw, device, min_res_train)
     else:
-        X_raw, _ = create_dataset(num_samples=2000)
-
-    plot_figure_2_3D_v3(model, X_raw, device, m_res_train)
+        print("⚠️ 警告：当前会话中未找到 X_raw 或 min_res_train 变量！")
+        print("请确保你在运行此脚本前，已经成功运行了前面的数据集生成/训练单元格。")
+except NameError:
+    print("⚠️ 错误：在当前内存中找不到名为 'model' 的神经网络对象！")
+    print("请确认包含 'model = SuperResNet()' 的训练代码已经完整跑完。")
