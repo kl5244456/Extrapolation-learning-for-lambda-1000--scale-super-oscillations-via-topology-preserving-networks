@@ -6,10 +6,12 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
 import scipy.io as sio
+import copy
 from torch.utils.data import DataLoader, TensorDataset
+from sklearn.model_selection import train_test_split
 
 # ==========================================
-# 1. 
+# 1.
 # ==========================================
 def generate_cheby_zeros(N_lines, ctrlrgn, peakval):
     n = int(np.ceil((N_lines - 1) / 2))
@@ -27,7 +29,7 @@ def generate_cheby_zeros(N_lines, ctrlrgn, peakval):
         return np.array(zn)
     except: return np.array([])
 
-def create_dataset(num_samples=5000):
+def create_dataset(num_samples=3000):
     lam, NA = 632.8e-9, 1.0
     k_max = (2 * np.pi / lam) * NA
     N_lines = 33
@@ -58,35 +60,88 @@ class SuperResNet(nn.Module):
     def forward(self, x): return self.net(x)
 
 # ==========================================
-# 2. 
+# 2.
 # ==========================================
 num_runs = 50
 target_points = np.array([0.4, 0.3, 0.2, 0.1, 0.08, 0.06, 0.04, 0.02, 0.01])
 lam, NA = 632.8e-9, 1.0
 k_max = (2 * np.pi / lam) * NA
-delk = 2 * k_max / 33  # 
+delk = 2 * k_max / 33
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 all_stats_data = []
-all_zeros_vault = np.zeros((num_runs, len(target_points), 32), dtype=complex) # 50*9*32 零点矩阵
+all_zeros_vault = np.zeros((num_runs, len(target_points), 32), dtype=complex)
 
-print(f"🚀 Starting 50-Run Statistical Analysis...")
+print(f"🚀 Starting 50-Run Statistical Analysis with Advanced Optimization Controls...")
 
 for run_id in range(num_runs):
-    # 2.1 
-    X_raw, Y_raw = create_dataset(3000)
+    # 2.1 数据生成与 8:2 切分
+    X_raw, Y_raw = create_dataset(5000)
+
+    X_train, X_val, Y_train, Y_val = train_test_split(
+        X_raw, Y_raw, test_size=0.20, random_state=42 + run_id, shuffle=True
+    )
+
     model = SuperResNet().to(device)
-    optimizer = optim.Adam(model.parameters(), lr=0.0005)
+    optimizer = optim.Adam(model.parameters(), lr=5e-4)
     criterion = nn.MSELoss()
-    loader = DataLoader(TensorDataset(torch.FloatTensor(X_raw), torch.FloatTensor(Y_raw)), batch_size=128, shuffle=True)
 
-    model.train()
-    for epoch in range(151): # 50 runs
-        for bx, by in loader:
+    # 动态步长衰减器（10代不降，学习率减半）
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='min', factor=0.5, patience=10, min_lr=1e-6
+    )
+
+    train_loader = DataLoader(
+        TensorDataset(torch.FloatTensor(X_train), torch.FloatTensor(Y_train)),
+        batch_size=128, shuffle=True
+    )
+
+    val_x = torch.FloatTensor(X_val).to(device)
+    val_y = torch.FloatTensor(Y_val).to(device)
+
+    best_val_loss = np.inf
+    best_model_state = None
+    max_epochs = 400         
+    patience = 25           
+    patience_counter = 0
+    min_delta = 1e-8        
+
+    for epoch in range(max_epochs):
+        # ----------------- 训练阶段 -----------------
+        model.train()
+        epoch_loss = 0.0
+        for bx, by in train_loader:
             bx, by = bx.to(device), by.to(device)
-            optimizer.zero_grad(); out = model(bx); loss = criterion(out, by); loss.backward(); optimizer.step()
+            optimizer.zero_grad()
+            pred = model(bx)
+            loss = criterion(pred, by)
+            loss.backward()
+            optimizer.step()
+            epoch_loss += loss.item()
 
-    # 2.2 
+        avg_train_loss = epoch_loss / len(train_loader)
+
+        # ----------------- 验证阶段 -----------------
+        model.eval()
+        with torch.no_grad():
+            pred_val = model(val_x)
+            avg_val_loss = criterion(pred_val, val_y).item()
+
+        scheduler.step(avg_val_loss)
+
+        if avg_val_loss < best_val_loss - min_delta:
+            best_val_loss = avg_val_loss
+            best_model_state = copy.deepcopy(model.state_dict()) # 深度克隆最佳状态
+            patience_counter = 0
+        else:
+            patience_counter += 1
+
+        if patience_counter >= patience:
+            break 
+
+    model.load_state_dict(best_model_state)
+
+    # 2.2
     model.eval()
     for idx, tp in enumerate(target_points):
         with torch.no_grad():
@@ -94,7 +149,6 @@ for run_id in range(num_runs):
             pred = model(t_in).cpu().numpy()[0]
             zn = pred[:32] + 1j * pred[32:]
 
-            # sigma = angle / delk
             angles = np.angle(zn)
             p_angs = angles[angles > 0]; n_angs = angles[angles < 0]
             if len(p_angs) > 0 and len(n_angs) > 0:
@@ -105,35 +159,33 @@ for run_id in range(num_runs):
             all_stats_data.append({'Target': tp, 'Measured': m_res})
             all_zeros_vault[run_id, idx, :] = zn
 
-    if (run_id + 1) % 5 == 0: print(f"Run {run_id+1}/{num_runs} completed.")
+    if (run_id + 1) % 5 == 0 or (run_id + 1) == num_runs:
+        print(f"Run {run_id+1:02d}/{num_runs} | Best Val MSE: {best_val_loss:.6e} | Stopped at Epoch {epoch}")
 
 # ==========================================
 # 3. 
 # ==========================================
 df = pd.DataFrame(all_stats_data)
-train_limit = 0.0844
+train_limit = np.min(X_raw[:, 1]) 
+
 plt.figure(figsize=(12, 8), dpi=150)
 sns.set_style("white")
 
-# 
 ax = sns.boxplot(x='Target', y='Measured', data=df,
-                 order=target_points, # 
+                 order=target_points,
                  palette='viridis', fliersize=5)
 
-# 
 x_indices = np.arange(len(target_points))
 plt.plot(x_indices, target_points, 'r--', lw=2, label='Ideal Reference ($y=x$)')
 
-# traning boundary
-plt.axhline(y=train_limit, color='gray', linestyle=':', lw=2, label=f'Training Limit ({train_limit:.3f}λ)')
-
-# 
+plt.axhline(y=train_limit, color='gray', linestyle=':', lw=2, label=f'Training Limit ({train_limit:.4f}λ)')
+ 
 plt.gca().invert_xaxis()
 
-plt.title(f"Figure 3a: Statistical Robustness (50 Independent Runs)", fontweight='bold', fontsize=16)
+plt.title(f"Figure 3a: Statistical Robustness Across 50 Standardized Runs", fontweight='bold', fontsize=16)
 plt.xlabel(r"Target Resolution $\sigma$ ($\lambda$)", fontsize=14)
 plt.ylabel(r"Measured Resolution $\sigma_{meas}$ ($\lambda$)", fontsize=14)
-plt.legend(fontsize=12)
+plt.legend(fontsize=12, loc='upper left')
 plt.grid(axis='y', alpha=0.2)
 
 plt.show()
