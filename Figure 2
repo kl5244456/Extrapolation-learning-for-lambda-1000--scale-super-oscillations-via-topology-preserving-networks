@@ -34,7 +34,7 @@ def plot_figure_2_3D_v3(model, X_raw, device, min_res_train):
         n_samples = min(len(X_raw), 2000)
         subset_idx = np.random.choice(len(X_raw), n_samples, replace=False)
         x_sub = torch.FloatTensor(X_raw[subset_idx, :2]).to(device)
-        latent_features = model.net[:7](x_sub).cpu().numpy()
+        latent_features = model.net[:6](x_sub).cpu().numpy()
     pca = PCA(n_components=2)
     latent_2d = pca.fit_transform(latent_features)
     sc = ax_a.scatter(latent_2d[:, 0], latent_2d[:, 1], c=X_raw[subset_idx, 1], cmap='plasma', s=15, alpha=0.6)
