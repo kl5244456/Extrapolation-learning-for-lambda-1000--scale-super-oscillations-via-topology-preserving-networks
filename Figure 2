@@ -8,12 +8,12 @@ from mpl_toolkits.mplot3d import Axes3D
 import numpy as np
 
 # ==========================================
-# 1. 检测设备
+# 1.
 # ==========================================
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # ==========================================
-# 2. 核心绘图函数 (保持你的精美学术级排版不变)
+# 2.
 # ==========================================
 def plot_figure_2_3D_v3(model, X_raw, device, min_res_train):
     plt.rcParams.update({
@@ -30,7 +30,6 @@ def plot_figure_2_3D_v3(model, X_raw, device, min_res_train):
     # --- (A) Latent Space PCA ---
     ax_a = fig.add_subplot(gs[0, 0])
     with torch.no_grad():
-        # 增加安全防御：防止 X_raw 样本数不足 2000 导致报错
         n_samples = min(len(X_raw), 2000)
         subset_idx = np.random.choice(len(X_raw), n_samples, replace=False)
         x_sub = torch.FloatTensor(X_raw[subset_idx, :2]).to(device)
@@ -107,10 +106,8 @@ def plot_figure_2_3D_v3(model, X_raw, device, min_res_train):
 # 3.
 # ==========================================
 try:
-    # 确保模型已经切换到正确的设备
     model.to(device)
     
-    # 动态检查所需变量是否存在于当前环境的内存中
     if 'X_raw' in locals() and 'min_res_train' in locals():
         print(">>> 检测到内存中的原始数据集和边界，正在直接渲染图表...")
         plot_figure_2_3D_v3(model, X_raw, device, min_res_train)
