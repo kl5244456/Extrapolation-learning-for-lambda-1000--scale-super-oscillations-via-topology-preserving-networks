@@ -12,7 +12,7 @@ from sklearn.model_selection import train_test_split
 from google.colab import files
 
 # ==========================================
-# 1. 数据集构建
+# 1.
 # ==========================================
 def generate_cheby_zeros(N_lines, ctrlrgn, peakval):
     n = int(np.ceil((N_lines - 1) / 2))
@@ -50,7 +50,7 @@ def create_dataset(num_samples=3000):
     return np.array(all_inputs), np.array(all_targets)
 
 # ==========================================
-# 2. 网络架构
+# 2.
 # ==========================================
 class SuperResNet(nn.Module):
     def __init__(self, mode='Baseline'):
